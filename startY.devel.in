@@ -1,0 +1,30 @@
+#!/bin/bash
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+sysconfdir=@sysconfdir@
+bindir=@bindir@
+
+yconfigfile=${YCONFIGFILE:-$sysconfdir/Y/default.conf}
+
+yunixsocket=$( grep 'LoadModule[ \t]\+"driver/ipc/unix"' $yconfigfile \
+               | sed 's/^.*socket=\([^ \t]\+\)/\1/' )
+
+if [ x$yunixsocket == x ] ; then
+  yunixsocket=/tmp/.Y-0
+fi
+
+if [ -S $yunixsocket ] ; then
+  echo "*** A server is already running on $yunixsocket"
+  echo "*** Removing the socket..."
+  rm -f $yunixsocket
+fi
+
+export YDISPLAY=unix:$yunixsocket
+
+./Y/Y &
+
+sleep 1
+
+exec ./clients/terminal/yiterm
+

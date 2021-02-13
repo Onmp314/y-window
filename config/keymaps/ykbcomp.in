@@ -1,0 +1,96 @@
+#!/usr/bin/perl
+
+# Y keymap compiler
+
+use 5.6.0;
+use strict;
+use warnings;
+
+use lib '@pkgdatadir@/ykbcomp';
+BEGIN {unshift @INC, (split /:/, $ENV{ykbcomp_libdir}) if exists $ENV{ykbcomp_libdir};}
+
+use Getopt::Long qw/:config require_order pass_through/;
+
+use YKB::YKB;
+use YKB::YKM;
+
+my $version = "0.1";
+
+sub usage
+  {
+    print <<END;
+ykbcomp [OPTION] <source files> ...
+
+Compile Y keymaps
+
+Options:
+ -s, --strict
+          Fail if any warnings are generated
+ -D, --decompile
+          Decomplie a keymap to source form
+ -h, --help
+          Show this message
+ -o <file>, --output <file>
+          Place the output into <file>
+ -v, --verbose
+          Be more verbose
+ --debug
+          Dump data to stdout that can aid in debugging ykbcomp
+END
+    exit $_[0] || 0;
+  }
+
+my $output;
+my $strict;
+my $debug;
+my $verbose;
+my $decompile;
+GetOptions('help|h' => \&usage,
+           'output|o=s' => \$output,
+           'strict|s' => \$strict,
+           'decompile|D' => \$decompile,
+           'verbose|v' => \$verbose,
+           'debug' => \$debug,
+          );
+
+my $source = shift @ARGV;
+unless (defined $source)
+  {
+    print STDERR "No source file given\n";
+    usage(1);
+  }
+if (scalar @ARGV)
+  {
+    print STDERR "Too many arguments\n";
+    usage(1);
+  }
+
+unless (defined $output)
+  {
+    $output = $source;
+    $output =~ s/\.[^.]*$//;
+    $output .= $decompile ? ".ykb" : ".ykm";
+  }
+
+print "Generating output in '$output'\n" if $verbose;
+
+if ($decompile)
+  {
+    my $ykm = load YKB::YKM $source, $strict;
+    exit 1 unless $ykm;
+
+    my $ykb = $ykm->ykb() or die "Failed to convert to YKB::YKB";
+
+    exit 1 unless $ykb->output($output);
+    exit 0;
+  }
+else
+  {
+    my $ykb = load YKB::YKB $source, $strict;
+    exit 1 unless $ykb;
+
+    my $ykm = $ykb->ykm() or die "Failed to convert to YKB::YKM";
+
+    exit 1 unless $ykm->output($output);
+    exit 0;
+  }

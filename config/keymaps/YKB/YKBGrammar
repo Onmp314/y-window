@@ -1,0 +1,332 @@
+file:
+     block(s) eof {$item[1]}
+
+eof:
+     /^\Z/
+
+block:
+     default(?) 'keymap' <commit> startline block_name(?) '{' keymap_statement(s?) '}'
+       {{type => $item[2],
+         name => $item{'block_name(?)'}[0],
+         statements => [map {ref $_ eq 'ARRAY' ? @$_ : $_} @{$item[-2]}],
+         default => $item{'default(?)'}[0],
+         file => $::YKB_file,
+         line => $item{startline}}}
+
+   | 'keycode' 'name' <commit> startline block_name '{' keycode_name_statement(s?) '}'
+       {{type => $item[1], name => $item{block_name}, statements => $item[-2],
+         file => $::YKB_file,
+         line => $item{startline}}}
+
+   | 'keycode' <commit> startline block_name '{' keycode_statement(s?) '}'
+       {{type => $item[1], name => $item{block_name}, statements => $item[-2],
+         file => $::YKB_file,
+         line => $item{startline}}}
+
+   | 'modifier' 'name' <commit> startline block_name '{' modifier_name_statement(s?) '}'
+       {{type => $item[1], name => $item{block_name}, statements => $item[-2],
+         file => $::YKB_file,
+         line => $item{startline}}}
+
+   | 'modifier' <commit> startline block_name '{' modifier_statement(s?) '}'
+       {{type => $item[1], name => $item{block_name}, statements => $item[-2],
+         file => $::YKB_file,
+         line => $item{startline}}}
+
+   | 'seq' <commit> startline block_name '{' seq_statement(s?) '}'
+       {{type => $item[1], name => $item{block_name}, statements => $item[-2],
+         file => $::YKB_file,
+         line => $item{startline}}}
+
+   | 'option' <commit> startline block_name '{' option_statement(s?) '}'
+       {{type => 'option',
+         name => $item{block_name},
+         keymaps => $item[-2],
+         file => $::YKB_file,
+         line => $item{startline}}}
+
+   | '#' /[^\n]*\n/
+       {0}
+
+   | <error>
+
+startline: '' {$thisline}
+
+keymap_statement:
+     '\}' <commit> <reject>
+
+   | eof <commit> <reject>
+
+   | '#' /[^\n]*\n/
+       {0}
+ 
+   | 'keycode' 'name' '{' <commit> keycode_name_statement(s?) '}'
+       {$item[-2]}
+
+   | 'keycode' 'name' <commit> keycode '=' description ';'
+       {{type => 'keycode name', name => $item{keycode}, desc => $item{description}, file => $::YKB_file, line => $thisline}}
+
+   | 'keycode' '{' <commit> keycode_statement(s?) '}'
+       {$item[-2]}
+
+   | 'keycode' keycode '=' number ';'
+       {{type => 'keycode', name => $item{keycode}, value => $item{number}, file => $::YKB_file, line => $thisline}}
+
+   | 'keycode' <commit> keycode '=' keycode ';'
+       {{type => 'keycode', name => $item[3], alias => $item[-2], file => $::YKB_file, line => $thisline}}
+
+   | 'modifier' 'name' '{' <commit> modifier_name_statement(s?) '}'
+       {$item[-2]}
+
+   | 'modifier' 'name' modifier_mask '/' modifier_mask '=' description ';'
+       {{type => 'modifier name', modifier => $item[3], mask => $item[5], desc => $item{description}, file => $::YKB_file, line => $thisline}}
+
+   | 'modifier' 'name' <commit> modifier_mask '=' description ';'
+       {{type => 'modifier name', modifier => $item{modifier_mask}, desc => $item{description}, file => $::YKB_file, line => $thisline}}
+
+   | 'modifier' '{' modifier_statement(s?) '}'
+       {$item[-2]}
+
+   | 'modifier' <commit> modifier '=' modifier_mask ';'
+       {{type => 'modifier', name => $item{modifier}, value => $item{modifier_mask}, file => $::YKB_file, line => $thisline}}
+
+   | 'seq' '{' <commit> seq_statement(s?) '}'
+       {$item[-2]}
+
+   | 'seq' <commit> sequence ';'
+       {{type => 'seq', sequence => $item{sequence}, file => $::YKB_file, line => $thisline}}
+
+   | 'include' <commit> type block_name ';'
+       {{type => $item{type}, name => $item{block_name}, include => 1, file => $::YKB_file, line => $thisline}}
+
+   | <error>
+
+keycode_statement:
+     '\}' <commit> <reject>
+
+   | eof <commit> <reject>
+
+   | '#' /[^\n]*\n/
+       {0}
+
+   | 'include' <commit> block_name ';'
+       {{type => 'keycode', name => $item{block_name}, include => 1, file => $::YKB_file, line => $thisline}}
+
+   | keycode '=' number ';'
+       {{type => 'keycode', name => $item{keycode}, value => $item{number}, file => $::YKB_file, line => $thisline}}
+
+   | keycode <commit> '=' keycode ';'
+       {{type => 'keycode', name => $item[1], alias => $item[-2], file => $::YKB_file, line => $thisline}}
+
+   | <error>
+
+modifier_statement:
+     '\}' <commit> <reject>
+
+   | eof <commit> <reject>
+
+   | '#' /[^\n]*\n/
+       {0}
+
+   | 'include' <commit> block_name ';'
+       {{type => 'modifier', name => $item{block_name}, include => 1, file => $::YKB_file, line => $thisline}}
+
+   | modifier <commit> '=' modifier_mask ';'
+       {{type => 'modifier', name => $item{modifier}, value => $item{modifier_mask}, file => $::YKB_file, line => $thisline}}
+
+   | <error>
+
+keycode_name_statement:
+     '\}' <commit> <reject>
+
+   | eof <commit> <reject>
+
+   | '#' /[^\n]*\n/
+       {0}
+
+   | 'include' <commit> block_name ';'
+       {{type => 'keycode name', name => $item{block_name}, include => 1, file => $::YKB_file, line => $thisline}}
+
+   | keycode '=' description ';'
+       {{type => 'keycode name', name => $item{keycode}, desc => $item{description}, file => $::YKB_file, line => $thisline}}
+
+   | <error>
+
+modifier_name_statement:
+     '\}' <commit> <reject>
+
+   | eof <commit> <reject>
+
+   | '#' /[^\n]*\n/
+       {0}
+
+   | 'include' <commit> block_name ';'
+       {{type => 'modifier name', name => $item{block_name}, include => 1, file => $::YKB_file, line => $thisline}}
+
+   | modifier_mask '/' modifier_mask '=' description ';'
+       {{type => 'modifier name', modifier => $item[1], mask => $item[3], desc => $item{description}, file => $::YKB_file, line => $thisline}}
+
+   | modifier_mask '=' description ';'
+       {{type => 'modifier name', modifier => $item{modifier_mask}, desc => $item{description}, file => $::YKB_file, line => $thisline}}
+
+   | <error>
+
+option_statement:
+     '\}' <commit> <reject>
+
+   | eof <commit> <reject>
+
+   | '#' /[^\n]*\n/
+       {0}
+
+   | 'keymap' block_name ';'
+       {{type => 'keymap',
+         name => $item{block_name},
+         file => $::YKB_file,
+         line => $thisline}}
+
+   | 'keymap' <commit> block_name '{' keymap_statement(s?) '}'
+       {{type => 'keymap',
+         name => $item{block_name},
+         statements => $item{'keymap_statement(s?)'},
+         file => $::YKB_file,
+         line => $thisline}}
+
+   | <error>
+
+default:
+     'default'
+
+seq_statement:
+     '\}' <commit> <reject>
+
+   | eof <commit> <reject>
+
+   | '#' /[^\n]*\n/
+       {0}
+
+   | 'include' <commit> block_name ';'
+       {{type => 'seq', name => $item{block_name}, include => 1, file => $::YKB_file, line => $thisline}}
+
+   | sequence ';'
+       {{type => 'seq', sequence => $item{sequence}, file => $::YKB_file, line => $thisline}}
+
+   | <error>
+
+sequence: keystroke_or_action(s)
+
+keystroke_or_action:
+     action
+
+   | keystroke
+
+   | <error>
+
+keystroke:
+     direction(?) keycode '[*]'
+       {{keycode => $item{keycode},
+         direction => $item{'direction(?)'}[0],
+         modifiers => [],
+         mask => []}}
+
+   | direction(?) keycode '[' modifier_mask '/' <commit> modifier_mask ']'
+       {{keycode => $item{keycode},
+         direction => $item{'direction(?)'}[0],
+         modifiers => $item[4],
+         mask => $item[-2]}}
+
+   | direction(?) keycode '[' <commit> modifier_mask ']'
+       {{keycode => $item{keycode},
+         direction => $item{'direction(?)'}[0],
+         modifiers => $item{modifier_mask}}}
+
+   | direction(?) keycode <commit>
+       {{keycode => $item{keycode},
+         direction => $item{'direction(?)'}[0]}}
+
+   | <error>
+
+direction:
+     '^'
+   | '*'
+
+action:
+     modifier_action <commit> '(' not(?) modifier_mask ')'
+       {{action => $item[1], arg => {not => $item[-3][0], modifiers => $item[-2]}}}
+
+   | 'beginExtended' <commit> '(' extended_input_method_name ')'
+       {{action => $item[1], arg => $item[-2]}}
+
+   | 'abortExtended' <commit> '(' ')'
+       {{action => $item[1]}}
+
+   | 'setKeymap' <commit> '(' <leftop: block_name ',' block_name> ')'
+       {{action => $item[1], arg => $item[-2]}}
+
+   | 'addKeymap' <commit> '(' <leftop: block_name ',' block_name> ')'
+       {{action => $item[1], arg => $item[-2]}}
+
+   | 'removeKeymap' <commit> '(' <leftop: block_name ',' block_name> ')'
+       {{action => $item[1], arg => $item[-2]}}
+
+   | 'setOption' <commit> '(' block_name ',' block_name ')'
+       {{action => $item[1], arg => {option => $item[-4], keymap => $item[-2]}}}
+
+   | 'unsetOption' <commit> '(' block_name ')'
+       {{action => $item[1], arg => $item[-2]}}
+
+   | 'string' <commit> '(' quoted_string ')'
+       {{action => $item[1], arg => $item[-2]}}
+
+   | 'event' <commit> '(' quoted_string ')'
+       {{action => $item[1], arg => $item[-2]}}
+
+   | 'clear' <commit> '(' ')'
+       {{action => $item[1]}}
+
+   | <error>
+
+not: '!'
+
+modifier_action:
+     'setModifiers'
+   | 'maskModifiers'
+   | 'toggleModifiers'
+   | 'setStickyModifiers'
+   | 'maskStickyModifiers'
+   | 'toggleStickyModifiers'
+
+modifier_mask:
+     <leftop: modifier_value '|' modifier_value>
+
+   | <error>
+
+modifier_value:
+     modifier
+       {{name => $item[1], file => $::YKB_file, line => $thisline}}
+
+   | number
+       {{index => $item[1], file => $::YKB_file, line => $thisline}}
+
+   | <error>
+
+type:
+     'keymap'
+   | 'keycode'
+   | 'modifier'
+   | 'desc'
+   | 'seq'
+   | <error>
+
+keycode: /[_A-Za-z][_A-Za-z0-9]*/
+modifier: /[_A-Za-z][_A-Za-z0-9]*/
+number: /\d+/
+description: quoted_string
+block_name: quoted_string
+
+quoted_string:
+     "'" <commit> /(\\\'|[^\'])*/ "'"
+       {$item[3]}
+
+   | '"' <commit> /(\\\"|[^\"])*/ '"'
+       {$item[3]}

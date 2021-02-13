@@ -1,0 +1,28 @@
+Y 0.2
+=====
+
+Visit http://www.y-windows.org/ for more information.
+
+
+
+BUILDING
+--------
+
+If you are using a development snapshot, or got this tree from an Arch
+archive, then you need to run
+
+  ./autogen.sh
+
+before the tree will be usable.
+
+To configure, compile and install, use:
+
+  ./configure --prefix=/path/to/install/dir
+  make
+  make install
+
+You MUST install before Y will run as it needs to locate its modules in the
+installed directory.
+
+
+# arch-tag: 636c673b-8186-440d-be33-e76a54f05ee9

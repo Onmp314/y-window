@@ -1,0 +1,10 @@
+BINUTILS_TEST {
+        global:
+                _init;
+                _fini;
+                extern "C++" {
+                        Test::*;
+                };
+        local:
+                *;
+};

@@ -1,0 +1,14 @@
+LIBYCXX_0.2_0 {
+        global:
+                _init;
+                _fini;
+                extern "C++" {
+                        Y::*;
+                        operator*Y::*;
+                        operator*YMessageOperation*;
+                        vtable?for?Y::*;
+                        typeinfo?for?Y::*;
+                };
+        local:
+                *;
+};

@@ -1,0 +1,24 @@
+TODO
+====
+
+Minor
+-----
+
+buffer/rgbabuffer.c: various clipping still needed...
+
+Major
+-----
+
+Additional widgets
+  - menu
+  - popup
+  - edit
+  - alignment widgets
+  - ... (see Outsourcing report)
+Documentation
+Hardware Acceleration
+Improve font support (incl. general text rendering)
+
+
+Tidying
+-------

@@ -1,0 +1,1281 @@
+#!/usr/bin/perl
+
+# Y class preprocessor
+
+# This generates some infrastructure code from the class definitions
+# in the source
+
+use 5.6.0;
+use strict;
+use warnings;
+
+use Cwd;
+use Data::Dumper;
+use IO::File;
+use Getopt::Long qw/:config require_order pass_through/;
+
+my $version = "0.1";
+
+sub usage
+  {
+    print <<END;
+yclpp [OPTION] <source files> ...
+
+Preprocesses Y class definitions
+
+Options:
+ -c, --class
+          Only generate the given class file
+ -h, --help
+          Show this message
+ -o <dir>, --output <dir>
+          Place the output into <dir>
+ -v, --verbose
+          Be more verbose
+ --debug
+          Dump data to stdout that can aid in debugging yclpp
+END
+    exit 0;
+  }
+
+my $output_dir;
+my $debug;
+my $verbose;
+my $wanted_class;
+GetOptions('help|h' => \&usage,
+           'output|o=s' => \$output_dir,
+           'verbose|v' => \$verbose,
+           'debug' => \$debug,
+           'class|c=s' => \$wanted_class,
+          );
+
+die "No source files given" unless scalar @ARGV;
+
+unless (defined $output_dir)
+  {
+    $output_dir = cwd;
+  }
+
+print "Generating output in '$output_dir'\n" if $verbose;
+
+my $errors = 0;
+my $error_handler;
+sub error
+  {
+    $errors++;
+    return $error_handler->(@_) if defined $error_handler;
+    print "$_[0]\n";
+  }
+
+my $class;
+
+# decl is used for return types, arg_decl is used for argument types
+
+my %typemap = (uint32 => {decl => 'uint32_t ',
+                          arg_decl => 'uint32_t',
+                          re => 'uint32_t',
+                          selector => '.uint32',
+                         },
+               int32 => {decl => 'int32_t ',
+                         arg_decl => 'int32_t',
+                         re => 'int32_t',
+                         selector => '.int32',
+                        },
+               string => {decl => 'const char *',
+                          arg_decl => 'uint32_t, const char *',
+                          re => 'const\s+char\s+\*',
+                          selector => undef,
+                         },
+               object => {decl => 'struct Object *',
+                          arg_decl => 'struct Object *',
+                          re => 'struct\s+Object\s+\*',
+                          selector => '.obj',
+                         },
+               any => {decl => 'struct Value *',
+                       arg_decl => 'const struct Value *',
+                       re => undef,
+                       selector => '',
+                      },
+               '...' => {decl => 'struct Tuple *',
+                         arg_decl => 'const struct Tuple *',
+                         re => undef,
+                         selector => undef,
+                        },
+              );
+
+sub check_valid_type
+  {
+    my @type = @{shift()};
+    my $context = shift;
+
+    # Every element must be a valid type
+    foreach my $e (@type)
+      {
+        unless (exists $typemap{$e})
+          {
+            error("Invalid type '$e' in $context type");
+          }
+      }
+
+    # A list type must come at the end
+    pop @type;
+    if (grep {$_ eq '...'} @type)
+      {
+        error("List elements must come at the end of a type");
+      }
+  }
+
+# We check for ambiguity by normalising and then comparing
+my %normal = (uint32 => 'uint32',
+              int32 => 'uint32',
+              object => 'uint32',
+              string => 'string',
+              '...' => 'list',
+             );
+
+sub is_ambiguous
+  {
+    my @a = map {$normal{$_}} @{shift()};
+    my @b = map {$normal{$_}} @{shift()};
+
+    return 0 if scalar @a != scalar @b;
+    if (0 == grep {$a[$_] ne $b[$_]} 0 .. scalar @a - 1)
+      {
+        # There are no elements which are different. So they're ambiguous
+        return 1;
+      }
+  }
+
+my $instance_methods;
+my $class_methods;
+
+sub method
+  {
+    my $method = shift;
+    my $function = shift;
+    my $args = shift;
+    my $function_args = shift;
+    my $result = shift;
+    my $static = shift;
+    my $function_return = shift;
+    my $location = shift;
+
+    print "Parsed a method definition:\n" if $debug;
+    print Dumper($method, $function, $args, $function_args, $result, $function_return) if $debug;
+
+    my $instance_method = 0;
+    # It is an instance method if the first function argument is a class pointer
+    if (scalar @$function_args)
+      {
+        if ($function_args->[0] =~ /^struct\s+\Q$class\E\s*\*\w+$/)
+          {
+            $instance_method = 1;
+            # Discard the first argument; we know everything we need to about it
+            shift @$function_args;
+          }
+      }
+
+    # The next argument might be a client pointer
+    my $client_arg;
+    if (scalar @$function_args)
+      {
+        if ($function_args->[0] =~ /^struct\s+Client\s*\*\w+$/)
+          {
+            $client_arg = 1;
+            shift @$function_args;
+          }
+      }
+
+    my $argument_convention;
+    # Anything left in @$function_args must match the method arguments
+    if (scalar @$function_args == 0
+        or (not $instance_method and scalar @$function_args == 1 and $function_args->[0] eq 'void'))
+      {
+        # Option 1: no function arguments
+        # This is only possible if there are no method arguments
+        if (scalar @$args > 0)
+          {
+            error("Function/method argument types mismatch (void function, non-void method)");
+            return;
+          }
+        $argument_convention = 'void';
+      }
+    elsif (scalar @$function_args == 1 and $function_args->[0] =~ /^struct\s+Tuple\s*\*\w+$/)
+      {
+        # Diagnostic: a non-const tuple is always invalid
+        error("Function has a non-const tuple argument");
+        return;
+      }
+    elsif (scalar @$function_args == 1 and $function_args->[0] =~ /^const\s+struct\s+Tuple\s*\*\w+$/)
+      {
+        # Option 2: one tuple argument
+        # This is always possible
+        $argument_convention = 'tuple';
+      }
+    else
+      {
+        # Option 3: direct mapped arguments
+        # This is only possible if there are method arguments
+        if (scalar @$args == 0)
+          {
+            error("Function/method argument types mismatch (non-void function, void method)");
+            return;
+          }
+        $argument_convention = 'direct';
+      }
+
+    die "Internal error: failed to determine an argument convention for '$method'" unless defined $argument_convention;
+
+    # Likewise, for the return value
+    if ($function_return eq 'void')
+      {
+        if (scalar @$result > 0)
+          {
+            error("Function/method return types mismatch (void function, non-void method)");
+            return;
+          }
+      }
+
+    check_valid_type($args, "argument");
+    check_valid_type($result, "result");
+
+    # Now, check the type against all the ones currently defined for ambiguity
+    foreach ($instance_method ? @{$instance_methods->{$method}} : @{$class_methods->{$method}})
+      {
+        if (is_ambiguous($_->{args}, $args))
+          {
+            error("Type makes method calls ambiguous, compared to $_->{name}");
+            print "$_->{location}: $_->{name} is defined here\n";
+          }
+      }
+
+    if ($instance_method)
+      {
+        push @{$instance_methods->{$method}}, {name => $function,
+                                               client_arg => $client_arg,
+                                               argument_convention => $argument_convention,
+                                               result_convention => $function_return,
+                                               static => $static,
+                                               args => $args, result => $result,
+                                               location => $location};
+      }
+    else
+      {
+        push @{$class_methods->{$method}}, {name => $function,
+                                            client_arg => $client_arg,
+                                            argument_convention => $argument_convention,
+                                            result_convention => $function_return,
+                                            static => $static,
+                                            args => $args, result => $result,
+                                            location => $location};
+      }
+
+    print join('', $instance_method ? "Instance" : "Class",
+               " method '$method' using $argument_convention argument and $function_return result conventions\n") if $debug;
+  }
+
+my $supers;
+
+sub super
+  {
+    my $super = shift;
+    print "Adding $super as a superclass of $class\n" if $debug;
+    push @$supers, $super;
+  }
+
+my $props;
+
+sub prop
+  {
+    my $name = shift;
+    my $type = shift;
+    my $source = shift;
+
+    check_valid_type([$type], "property");
+    print "Adding property $name with type $type to $class\n" if $debug;
+
+    if (exists $props->{$name})
+      {
+        error("Property $name was already declared");
+        print "$props->{$name}{source}: previously declared here\n";
+        return;
+      }
+
+    $props->{$name} = {type => $type,
+                       source => $source,
+                      };
+  }
+
+sub prop_hook
+  {
+    my $name = shift;
+    my $function = shift;
+    my $argument_convention = shift;
+    my $source = shift;
+
+    print "Adding property hook $function to property $name for $class\n" if $debug;
+
+    unless (exists $props->{$name})
+      {
+        error("Property $name has not been declared");
+        return;
+      }
+
+    if (defined $props->{$name}{hook})
+      {
+        error("Property $name already has a hook");
+        print "$props->{$name}{hook}{source}: hook previously declared here\n";
+        return;
+      }
+
+    $props->{$name}{hook} = {name => $function,
+                             argument_convention => $argument_convention,
+                             source => $source,
+                            };
+  }
+
+my %class;
+
+sub set_class
+  {
+    my $new_class = shift;
+    my $source = shift;
+
+    if (defined $class)
+      {
+        $class{$class}{instance_methods} = $instance_methods;
+        $class{$class}{class_methods} = $class_methods;
+        $class{$class}{supers} = $supers;
+        $class{$class}{props} = $props;
+      }
+
+    $class = $new_class;
+    return unless defined $class;
+
+    unless ($class =~ /^\w+$/)
+      {
+        error("Invalid class name '$class'");
+        exit 1;
+      }
+
+    if (exists $class{$class})
+      {
+        $instance_methods = $class{$class}{instance_methods};
+        $class_methods = $class{$class}{class_methods};
+        $supers = $class{$class}{supers};
+        $props = $class{$class}{props};
+      }
+    else
+      {
+        $instance_methods = {};
+        $class_methods = {};
+        $supers = [];
+        $props = {};
+      }
+    push @{$class{$class}{sources}}, $source;
+  }
+
+# Begin parsing
+
+foreach my $source (@ARGV)
+  {
+    my $fh = new IO::File $source, "r"
+      or die "Failed to open '$source': $!";
+
+    # First thing we want to find is the class definition
+    while (my $line = <$fh>)
+      {
+        chomp $line;
+        if ($line =~ /^\s*DEFINE_CLASS\(([^\),]+)\)\s*;\s*$/)
+          {
+            if (defined $wanted_class)
+              {
+                # Not the one we want?
+                next if $1 ne $wanted_class;
+              }
+            # Found it
+            set_class($1, $source);
+            last;
+          }
+      }
+
+    unless (defined $class)
+      {
+        print "Nothing to do in $source. Skipping.\n" if $verbose;
+        next;
+      }
+
+    $error_handler = sub
+      {
+        print join('', $source, ":", $fh->input_line_number, ": ", $_[0], "\n");
+      };
+
+    sub next_line
+      {
+        my $l = <$fh>;
+        if ($l)
+          {
+            chomp $l;
+          }
+        else
+          {
+            error("Unexpected EOF");
+          }
+        return $l;
+      }
+
+    # Now we scan the file for anything that looks like one of our
+    # comments, and parse appropriately
+
+    while (my $line = <$fh>)
+      {
+        chomp $line;
+        if ($line =~ /^\s*\/\* METHOD\s*$/)
+          {
+            my $start_line = $fh->input_line_number;
+
+            # Okay, next line should have the name and type
+            defined ($line = next_line) or next;
+            unless ($line =~ /^\s*(?:\*\s+)?([A-Za-z0-9_]+)\s+::\s+\(([^\)]*)\)\s*->\s*\(([^\)]*)\)\s*$/)
+              {
+                error("Failed to parse method type");
+                print "Was looking at line:\n";
+                print "$line\n";
+                next;
+              }
+            my ($method, $args, $return) = ($1, $2, $3);
+            my @args = split /\s*,\s*/, $args;
+            my @return = split /\s*,\s*/, $return;
+
+            # Now, we scan forward until we find the end of the comment
+            while ($line = next_line)
+              {
+                last if $line =~ /\*\//;
+              }
+            next unless defined $line;
+
+            # The next thing we see should be the implementation
+            while ($line = next_line)
+              {
+                last if $line =~ /\S/;
+              }
+            next unless defined $line;
+
+            # Storage qualifier
+            my $static = $line =~ s/^\s*static\b//;
+
+            # Then the return type
+            my $type;
+            if ($line =~ s/^\s*void(?:\s+|\s*$)//)
+              {
+                $type = 'void';
+              }
+            elsif ($line =~ s/^\s*struct\s+Tuple\s*\*(?:\s+|\s*$)//)
+              {
+                $type = 'tuple';
+              }
+            elsif (scalar @return == 1
+                   and defined $typemap{$return[0]}{re}
+                   and $line =~ s/^\s*$typemap{$return[0]}{re}(?:\s+|\s*$)//)
+              {
+                $type = 'direct';
+              }
+            else
+              {
+                error("Failed to parse method implementation (was expecting 'void', 'struct Tuple *', or a value type)");
+                next;
+              }
+
+            # Might need to pick up another line
+            while ($line !~ /\S/)
+              {
+                defined ($line = next_line) or last;
+              }
+            next unless defined $line;
+
+            # Next is the identifier
+            unless ($line =~ s/\s*(\w+)\s*//)
+              {
+                error("Failed to parse method implementation (was expecting a function identifier)");
+                next;
+              }
+            my $function = $1;
+
+            # And then the argument list - this can span multiple lines
+            unless ($line =~ /\(([^\)]*)(\)|$)/)
+              {
+                error("Failed to parse method implementation (was expecting a function argument list)");
+                next;
+              }
+
+            my $arg_str = $1;
+
+            while ($line !~ /\)/)
+              {
+                unless (defined ($line = next_line))
+                  {
+                    error("Failed to parse method implementation (was expecting an close parenthesis)");
+                    last;
+                  }
+                unless ($line =~ /^\s+([^\)]*)(\)|$)/)
+                  {
+                    error("Failed to parse method implementation (was expecting a function argument list)");
+                    next;
+                  }
+                $arg_str .= $1;
+              }
+
+            my @function_args = split /\s*,\s*/, $arg_str;
+
+            method($method, $function, \@args, \@function_args, \@return, $static, $type, join(':', $source, $start_line));
+          }
+        elsif ($line =~ /^\s*\/\* SUPER\s*$/)
+          {
+            # List of superclasses, one per line
+            while ($line = next_line)
+              {
+                next if $line =~ /^\s*\*\s*$/;
+                last if $line =~ /\*\//;
+                unless ($line =~ /^\s*(?:\*\s+)?(\w+)\s*$/)
+                  {
+                    error("Failed to parse superclass declaration");
+                    last;
+                  }
+                super($1);
+              }
+          }
+        elsif ($line =~ /^\s*\/\* PROPERTY\s*$/)
+          {
+            # List of properties, one per line
+            while ($line = next_line)
+              {
+                next if $line =~ /^\s*\*\s*$/;
+                last if $line =~ /\*\//;
+                unless ($line =~ /^\s*(?:\*\s+)?(\w+) :: (\w+)\s*$/)
+                  {
+                    error("Failed to parse property declaration");
+                    last;
+                  }
+                prop($1, $2, join(':', $source, $fh->input_line_number));
+              }
+          }
+        elsif ($line =~ /^\s*\/\* PROPERTY HOOK\s*$/)
+          {
+            my $start_line = $fh->input_line_number;
+
+            # Next line should be the property name
+            defined ($line = next_line) or next;
+            unless ($line =~ /^\s*(?:\*\s+)?(\w+)\s*$/)
+              {
+                error("Failed to parse property hook (was expecting a property name)");
+                next;
+              }
+            my $property = $1;
+
+            # Now, we scan forward until we find the end of the comment
+            while ($line = next_line)
+              {
+                last if $line =~ /\*\//;
+              }
+            next unless defined $line;
+
+            # The next thing we see should be the implementation
+            while ($line = next_line)
+              {
+                last if $line =~ /\S/;
+              }
+            next unless defined $line;
+
+            # First comes the return type
+            my $type;
+            $line =~ s/^\s*static\b//;
+            unless ($line =~ s/^\s*void(?:\s+|\s*$)//)
+              {
+                error("Return type of a property hook must be void");
+                next;
+              }
+
+            # Might need to pick up another line
+            while ($line !~ /\S/)
+              {
+                defined ($line = next_line) or last;
+              }
+            next unless defined $line;
+
+            # Next is the identifier
+            unless ($line =~ s/\s*(\w+)\s*//)
+              {
+                error("Failed to parse property hook implementation (was expecting a function identifier)");
+                next;
+              }
+            my $function = $1;
+
+            # And then the argument list
+            unless ($line =~ /\(([^\)]*)\)/)
+              {
+                error("Failed to parse method implementation (was expecting a function argument list)");
+                next;
+              }
+            my @function_args = split /\s*,\s*/, $1;
+            my $argument_convention;
+
+            # We'll just guess here, and emit a prototype later
+            if (scalar @function_args == 0
+                or (scalar @function_args == 1 and $function_args[0] eq 'void'))
+              {
+                $argument_convention = 'void'
+              }
+            elsif (scalar @function_args == 1)
+              {
+                $argument_convention = 'neither'
+              }
+            elsif (scalar @function_args == 2)
+              {
+                $argument_convention = 'new-only'
+              }
+            elsif (scalar @function_args == 3)
+              {
+                $argument_convention = 'both'
+              }
+            else
+              {
+                error("Failed to parse method implementation (was expecting zero to three arguments)");
+                next;
+              }
+
+            prop_hook($property, $function, $argument_convention, join(':', $source, $start_line));
+          }
+        elsif ($line =~ /^\s*DEFINE_CLASS\(([^\),])\)\s*;\s*$/)
+          {
+            # For now, we'll reject this
+            print "Found two class definitions in one file. Aborting.\n";
+            exit 1;
+          }
+      }
+  }
+
+$error_handler = undef;
+set_class(undef);
+
+# Parsing complete
+
+if ($errors)
+  {
+    print "Errors encountered. Stop.\n";
+    exit 1;
+  }
+
+# Begin output generation
+
+# Brace yourself, it's about to get ugly. There's no way to mix quoted
+# C and perl code that doesn't look ugly, short of using a form. And
+# forms suck in perl 5. I'll rewrite it using perl 6 someday, or maybe
+# using Perl6::Form in perl 5.
+
+sub make_value
+  {
+    return 'list' if $_[0] eq '...';
+    return lc $_[0];
+  }
+
+sub make_type
+  {
+    map {make_value $_} @_;
+  }
+
+sub make_header
+  {
+    my $class = shift;
+    my $sources = shift;
+    my $value = <<"END";
+/****** Hey, emacs! This is a -*- C -*- file ***************************
+ * Y class support code, generated by yclpp $version from:
+END
+    foreach my $source (@$sources)
+      {
+        $value .= <<"END";
+ * $source
+END
+      }
+    $value .= <<"END";
+ *
+ * This file contain support for the $class class.
+ *
+ * Since most of this file is generated from template code in yclpp,
+ * it may constitute a derivative work of yclpp. Therefore:
+ * Copyright (C) Andrew Suffield <asuffield\@debian.org>
+ *
+ * Any part of this file which is derived from yclpp may be freely
+ * used, modified, and/or redistributed with or without fee. No
+ * warranty is given, not even the implied warranty of merchantability
+ * or fitness for a particular purpose.
+ *
+ * If I were not a British citizen, I would have placed these
+ * components in the public domain. This license should be
+ * approximately equivalent.
+ *
+ * Copyright for the parts which are derived from the source file
+ * (named above) remains with the author of the source file. Therefore
+ * this file as a whole is under the same license as the source file.
+ */
+
+#include <Y/object/class.h>
+#include <Y/message/tuple.h>
+
+#define checkProperty(O, P) _Y__${class}__ ## P ## __check_property(O)
+#define getProperty(O, P) _Y__${class}__ ## P ## __get_property(O)
+#define safeGetProperty(O, P, U) (checkProperty(O, P) ? getProperty(O, P) : (U))
+#define setProperty(O, P, V) _Y__${class}__ ## P ## __set_property(O, V)
+
+END
+    return $value;
+  }
+
+sub make_tuple_type
+  {
+    my @list = make_type(@{$_[0]});
+    my $count = scalar @list;
+    my $value = <<"END";
+      .count = $count,
+      .list =
+      (enum Type []){
+END
+        foreach my $type (@list)
+          {
+            $value .= <<"END";
+        t_${type},
+END
+          }
+        $value .= <<"END";
+        t_undef
+      }
+END
+    return $value;
+  }
+
+sub make_function_prototype
+  {
+    my $instance = shift;
+    my $class = shift;
+    my $function = shift;
+
+    my $value = $function->{static} ? "static " : "";
+
+    if ($function->{result_convention} eq 'void')
+      {
+        $value .= "void ";
+      }
+    elsif ($function->{result_convention} eq 'tuple')
+      {
+        $value .= "struct Tuple *";
+      }
+    elsif ($function->{result_convention} eq 'direct')
+      {
+        $value .= $typemap{$function->{result}[0]}{decl};
+      }
+    $value .= $function->{name};
+
+    my @args;
+    if ($instance)
+      {
+        push @args, "struct $class *";
+      }
+
+    if ($function->{client_arg})
+      {
+        push @args, "struct Client *";
+      }
+
+    if ($function->{argument_convention} eq 'tuple')
+      {
+        push @args, "const struct Tuple *";
+      }
+
+    if ($function->{argument_convention} eq 'direct')
+      {
+        push @args, map {$typemap{$_}{arg_decl}} @{$function->{args}};
+      }
+
+    push @args, 'void' unless scalar @args;
+
+    $value .= "(" . join(', ', @args) . ")";
+
+    $value .= ";\n";
+    return $value;
+  }
+
+sub make_function_wrapper
+  {
+    my $instance = shift;
+    my $class = shift;
+    my $function = shift;
+
+    my $value = "";
+    if ($instance)
+      {
+        $value .= <<"END";
+static instanceFunctionWrapper _Y__$function->{name}__function_wrapper;
+static struct Tuple *
+_Y__$function->{name}__function_wrapper(struct Object *obj, struct Client *from, const struct Tuple *args, const struct MethodType *type)
+END
+      }
+    else
+      {
+        $value .= <<"END";
+static classFunctionWrapper _Y__$function->{name}__function_wrapper;
+static struct Tuple *
+_Y__$function->{name}__function_wrapper(struct Client *from, const struct Tuple *args, const struct MethodType *type)
+END
+      }
+
+    $value .= <<"END";
+{
+  struct Tuple *cast_args = tupleStaticCast(args, type->args);
+  if (!cast_args)
+    return tupleBuildError(tb_string("Type mismatch in arguments"));
+
+END
+
+    my @args;
+    if ($instance)
+      {
+        push @args, "(struct $class *)obj";
+      }
+
+    if ($function->{client_arg})
+      {
+        push @args, "from";
+      }
+
+    if ($function->{argument_convention} eq 'void')
+      {
+      }
+    elsif ($function->{argument_convention} eq 'tuple')
+      {
+        push @args, 'cast_args';
+      }
+    elsif ($function->{argument_convention} eq 'direct')
+      {
+        foreach my $i (0..scalar @{$function->{args}} - 1)
+          {
+            my $arg = $function->{args}[$i];
+            if ($arg eq '...')
+              {
+                $value .= <<"END";
+  struct Tuple tail_args = {.error = cast_args->error,
+                            .count = cast_args->count - $i,
+                            .list  = cast_args->list + $i};
+END
+                push @args, "&tail_args";
+                last;
+              }
+            elsif ($arg eq 'string')
+              {
+                push @args, "cast_args->list[$i].string.len";
+                push @args, "cast_args->list[$i].string.data";
+              }
+            else
+              {
+                push @args, "cast_args->list[$i]" . $typemap{$arg}{selector};
+              }
+          }
+      }
+
+    my $args = join(', ', @args);
+
+    my $result_assign;
+    if ($function->{result_convention} eq 'void')
+      {
+        $result_assign = '';
+      }
+    elsif ($function->{result_convention} eq 'tuple')
+      {
+        $result_assign = "struct Tuple *result = ";
+      }
+    elsif ($function->{result_convention} eq 'direct')
+      {
+        $result_assign = $typemap{$function->{result}[0]}{decl} . "value = ";
+      }
+
+    $value .= <<"END";
+  ${result_assign}$function->{name}(${args});
+END
+
+    $value .= <<"END";
+  tupleDestroy(cast_args);
+END
+
+    if ($function->{result_convention} eq 'void')
+      {
+        $value .= <<"END";
+  return NULL;
+END
+      }
+
+    if ($function->{result_convention} eq 'tuple')
+      {
+        # Note that we do not check the type of error tuples, because
+        # they are returned out-of-band
+        $value .= <<"END";
+
+  if (result && result->error)
+    return result;
+
+  struct Tuple *cast_result = tupleStaticCast(result, type->result);
+  tupleDestroy(result);
+
+  if (cast_result)
+    return cast_result;
+  else
+    return tupleBuildError(tb_string("Type mismatch in result"));
+END
+      }
+
+    if ($function->{result_convention} eq 'direct')
+      {
+        my $typename = $function->{result}[0];
+        $value .= <<"END";
+
+  struct Tuple *result = tupleBuild(tb_${typename}(value));
+  return result;
+END
+      }
+
+    $value .= <<"END";
+}
+
+END
+    return $value;
+  }
+
+sub make_method
+  {
+    my $instance = shift;
+    my $class = shift;
+    my $method = shift;
+    my @functions = @{shift()};
+
+    my $value = "";
+    foreach my $function (@functions)
+      {
+        $value .= make_function_prototype($instance, $class, $function);
+        $value .= "\n";
+        $value .= make_function_wrapper($instance, $class, $function);
+      }
+
+    if ($instance)
+      {
+        $value .= <<"END";
+static struct Tuple *
+_Y__${class}__${method}__instance_wrapper(struct Object *obj, struct Client *from, const struct Tuple *args)
+{
+END
+      }
+    else
+      {
+        $value .= <<"END";
+static struct Tuple *
+_Y__${class}__${method}__class_wrapper(struct Client *from, const struct Tuple *args)
+{
+END
+      }
+
+    foreach my $function (@functions)
+      {
+        $value .= <<"END";
+  struct TupleType $function->{name}_args_type =
+    {
+END
+        $value .= make_tuple_type($function->{args});
+        $value .= <<"END";
+    };
+
+  struct TupleType $function->{name}_result_type =
+    {
+END
+        $value .= make_tuple_type($function->{result});
+        $value .= <<"END";
+    };
+
+END
+      }
+
+    my $function_count = scalar @functions;
+
+    $value .= <<"END";
+  struct MethodTypes types =
+    {
+      .count = $function_count,
+      .list =
+      (struct MethodType []){
+END
+    foreach my $function (@functions)
+      {
+        $value .= <<"END";
+        {
+          .args = \&$function->{name}_args_type,
+          .result = \&$function->{name}_result_type,
+          .data = \&_Y__$function->{name}__function_wrapper
+        },
+END
+      }
+    $value .= <<"END";
+        {
+          .args = NULL,
+          .result = NULL,
+          .data = NULL
+        }
+      }
+    };
+
+  const struct MethodType *type = tupleMatchType(args, &types);
+  if (!type)
+    return tupleBuildError(tb_string("No match found for argument type"));
+
+END
+    if ($instance)
+      {
+        $value .= <<"END";
+  instanceFunctionWrapper *wrapper = type->data;
+  return (*wrapper)(obj, from, args, type);
+END
+      }
+    else
+      {
+        $value .= <<"END";
+  classFunctionWrapper *wrapper = type->data;
+  return (*wrapper)(from, args, type);
+END
+      }
+
+    $value .= <<"END";
+}
+
+END
+    return $value;
+  }
+
+sub make_property_hook
+  {
+    my $class = shift;
+    my $prop = shift;
+    my $function = shift;
+    my $argument_convention = shift;
+
+    my $value = "";
+
+    my @args;
+    if ($argument_convention eq 'void')
+      {
+    $value .= <<"END";
+static void $function(void);
+END
+      }
+    elsif ($argument_convention eq 'neither')
+      {
+        push @args, "(struct $class *)obj";
+    $value .= <<"END";
+static void $function(struct $class *);
+END
+      }
+    elsif ($argument_convention eq 'new-only')
+      {
+        push @args, "(struct $class *)obj";
+        push @args, 'new';
+    $value .= <<"END";
+static void $function(struct $class *, const struct Value *);
+END
+      }
+    elsif ($argument_convention eq 'both')
+      {
+        push @args, "(struct $class *)obj";
+        push @args, 'old';
+        push @args, 'new';
+    $value .= <<"END";
+static void $function(struct $class *, const struct Value *, const struct Value *);
+END
+      }
+
+    my $args = join(', ', @args);
+
+    $value .= <<"END";
+PropertyHook _Y__${class}__${prop}__property_hook_wrapper;
+void
+_Y__${class}__${prop}__property_hook_wrapper(struct Object *obj, const struct Value *old, const struct Value *new)
+{
+  $function($args);
+}
+
+END
+  }
+
+sub make_property_wrapper
+  {
+    my $class = shift;
+    my $prop = shift;
+    my $type = shift;
+
+    my $typename = $typemap{$type}{decl};
+
+    my $selector;
+    if ($type eq 'any')
+      {
+        $selector = '';
+      }
+    elsif ($type eq 'string')
+      {
+        $selector = '->string.data';
+      }
+    elsif ($type eq '...')
+      {
+        $selector = '->tuple';
+      }
+    else
+      {
+        $selector = '->' . $type;
+      }
+
+    my $lcclass = lc $class;
+    my $object = "${lcclass}ToObject(obj)";
+
+    my $value = <<"END";
+static bool
+_Y__${class}__${prop}__check_property(struct $class *obj)
+{
+  return objectGetProperty($object, "${prop}") != NULL;
+}
+
+static $typename
+_Y__${class}__${prop}__get_property(struct $class *obj)
+{
+  return objectGetProperty($object, "${prop}")${selector};
+}
+
+static bool
+_Y__${class}__${prop}__set_property(struct $class *obj, $typename value)
+{
+END
+
+    if ($type eq 'string')
+      {
+        $value .= <<"END"
+  size_t len = strlen(value);
+  char str[len + 1];
+  memcpy(str, value, len);
+
+END
+      }
+
+    $value .= <<"END";
+  struct Value v =
+  {
+    .type = t_${type},
+    {
+END
+    if ($type eq 'string')
+      {
+        $value .= <<"END"
+      .string = {
+                  .data = str,
+                  .len = len
+                }
+END
+      }
+    else
+      {
+    $value .= <<"END"
+      .${type} = value
+END
+      }
+    $value .= <<"END"
+    }
+  };
+  return objectSetProperty($object, "${prop}", &v);
+}
+
+END
+  }
+
+foreach my $class (keys %class)
+  {
+    my $output = File::Spec->catdir($output_dir, $class . ".yc");
+
+    my $fh = new IO::File $output, "w"
+      or die "Failed to open '$output' for writing: $!";
+
+    print $fh make_header($class, $class{$class}{sources});
+
+    foreach my $method (keys %{$class{$class}{instance_methods}})
+      {
+        print $fh make_method(1, $class, $method, $class{$class}{instance_methods}{$method});
+      }
+
+    foreach my $method (keys %{$class{$class}{class_methods}})
+      {
+        print $fh make_method(0, $class, $method, $class{$class}{class_methods}{$method});
+      }
+
+    foreach my $prop (keys %{$class{$class}{props}})
+      {
+        print $fh make_property_wrapper($class, $prop, $class{$class}{props}{$prop}{type});
+        if ($class{$class}{props}{$prop}{hook})
+          {
+            print $fh make_property_hook($class, $prop,
+                                         $class{$class}{props}{$prop}{hook}{name},
+                                         $class{$class}{props}{$prop}{hook}{argument_convention});
+          }
+      }
+
+    print $fh <<"END";
+struct Class *CLASS($class);
+
+static void _Y__${class}__class_constructor(void) __attribute__((constructor));
+static void _Y__${class}__class_constructor(void)
+{
+  const char *supers[] =
+    {
+END
+    foreach (@{$class{$class}{supers}})
+      {
+        print $fh <<"END";
+      "$_",
+END
+      }
+    my $super_count = scalar @{$class{$class}{supers}};
+    print $fh <<"END";
+      NULL
+    };
+  CLASS($class) = classCreate("$class", $super_count, supers);
+END
+
+    foreach my $method (keys %{$class{$class}{instance_methods}})
+      {
+        print $fh <<"END";
+  classAddInstanceMethod(CLASS($class), "$method", &_Y__${class}__${method}__instance_wrapper);
+END
+      }
+
+    foreach my $method (keys %{$class{$class}{class_methods}})
+      {
+        print $fh <<"END";
+  classAddClassMethod(CLASS($class), "$method", &_Y__${class}__${method}__class_wrapper);
+END
+      }
+
+    foreach my $prop (keys %{$class{$class}{props}})
+      {
+        my $typename = "t_" . make_value($class{$class}{props}{$prop}{type});
+        my $hook = $class{$class}{props}{$prop}{hook} ? "&_Y__${class}__${prop}__property_hook_wrapper" : "NULL";
+
+        print $fh <<"END";
+  classAddProperty(CLASS($class), "$prop", $typename, $hook);
+END
+      }
+
+    print $fh <<"END";
+}
+END
+    close $fh;
+  }
+
+# arch-tag: def78f8d-c288-4954-8359-0738e1cd641b

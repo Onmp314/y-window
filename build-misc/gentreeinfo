@@ -1,0 +1,222 @@
+#!/usr/bin/perl
+
+# Arch Tree Information Generator
+
+# This generates some information about the current tree version from
+# the patch-logs
+
+use 5.6.0;
+use strict;
+use warnings;
+
+use Cwd;
+use IO::Dir;
+use IO::File;
+use Getopt::Long qw/:config require_order pass_through/;
+
+my $version = "0.1";
+
+sub usage
+  {
+    print <<END;
+gentreeinfo [OPTION]
+
+Generate Arch source tree information
+
+Options:
+ -h, --help
+          Show this message
+ -o <file>, --output <file>
+          Output to <file>
+ -r <dir>, --root <dir>
+          The source tree is located in <dir>
+ -v, --verbose
+          Be more verbose
+END
+    exit 0;
+  }
+
+my $output_file;
+my $verbose;
+my $root_dir;
+GetOptions('help|h' => \&usage,
+           'output|o=s' => \$output_file,
+           'verbose|v' => \$verbose,
+           'root|r=s' => \$root_dir
+          );
+
+unless (defined $root_dir)
+  {
+    $root_dir = cwd;
+  }
+
+print "Generating tree info for '$root_dir'.\n" if $verbose;
+
+my $tree_development = 0;
+my $tree_archive = '';
+my $tree_category = '';
+my $tree_branch = '';
+my $tree_version = '';
+my $tree_revision = '';
+my $tree_fullname = '';
+my $tree_date = '';
+my $tree_standard_date = '';
+my $tree_latest_committer = '';
+my $tree_builder = '';
+
+
+if (-f "$root_dir/development")
+  {
+    $tree_development = 1;
+  }
+
+if (-d "$root_dir/{arch}")
+  {
+
+    print "Checking ++default version file.\n" if $verbose;
+
+    my $default_version_file = "$root_dir/{arch}/++default-version";
+    my $default_version_fh = new IO::File $default_version_file, "r"
+      or die "Failed to open '$default_version_file' for reading: $!";
+
+    my $default_version = <$default_version_fh>;
+    chomp $default_version;
+
+    undef $default_version_fh;
+
+    print "Default version is '$default_version'.\n" if $verbose;
+
+    if ($default_version =~ m/^(.+)\/(((.+)--.+)--.+)$/)
+      {
+        $tree_archive = $1;
+        $tree_version = $2;
+        $tree_branch = $3;
+        $tree_category = $4;
+      }
+    elsif ($default_version =~ m/^(.+)\/((.+)--.+)$/)
+      {
+        # no branch name
+        $tree_archive = $1;
+        $tree_version = $2;
+        $tree_branch = $3;
+        $tree_category = $3;
+      }
+
+    print "Tree archive is  '$tree_archive'.\n" if $verbose;
+    print "Tree category is '$tree_category'.\n" if $verbose;
+    print "Tree branch is   '$tree_branch'.\n" if $verbose;
+    print "Tree version is  '$tree_version'.\n" if $verbose;
+
+    $tree_fullname = "$tree_archive/$tree_version";
+
+    my $patchlog_dir =
+     "$root_dir/{arch}/$tree_category/$tree_branch/$tree_version/$tree_archive/patch-log";
+
+    if (-d $patchlog_dir)
+      {
+        print "Checking patchlogs in '$patchlog_dir' for latest patch log.\n"
+          if $verbose;
+
+        my %patchlog_dh;
+        tie %patchlog_dh, 'IO::Dir', $patchlog_dir;
+        my @patchlog_files = 
+            map { $_->[0] }
+            sort { $b->[1] cmp $a->[1] || $b->[2] <=> $a->[2] }
+            map { [ $_, m/^(\w+)-/, m/-(\d+)$/ ] }
+            grep { m/^\w+-\d+$/ }
+            keys %patchlog_dh;
+        untie %patchlog_dh;
+
+        if (@patchlog_files)
+          {
+            $tree_revision = $patchlog_files[0];
+            print "Latest patchlog is '$patchlog_dir/$tree_revision'.\n"
+              if $verbose;
+
+            $tree_fullname .= "--$tree_revision";
+
+            my $patchlog_fh = new IO::File "$patchlog_dir/$tree_revision", "r"
+              or die "Failed to open '$patchlog_dir/$tree_revision for reading:
+$!";
+
+            while (my $line = <$patchlog_fh>)
+              {
+                chomp $line;
+                if ($line =~ /^\s*Creator\s*:\s*(.*)$/)
+                  {
+                    $tree_latest_committer = $1;
+                  }
+                if ($line =~ /^\s*Date\s*:\s*(.*)$/)
+                  {
+                    $tree_date = $1;
+                  }
+                if ($line =~ /^\s*Standard-date\s*:\s*(.*)$/)
+                  {
+                    $tree_standard_date = $1;
+                  }
+              }
+
+            undef $patchlog_fh;
+          }
+      } 
+
+  }
+
+print "Checking for local arch id file.\n" if $verbose;
+
+if (-f "$ENV{HOME}/.arch-params/=id")
+  {
+    my $arch_id_fh = new IO::File "$ENV{HOME}/.arch-params/=id", "r";
+    if ($arch_id_fh)
+      {
+        $tree_builder = <$arch_id_fh>;
+        chomp $tree_builder;
+        undef $arch_id_fh;
+      }
+    else
+      {
+        print "Failed to open '$ENV{HOME}/.arch-params/=id' for reading: $!\n" if $verbose;
+      }
+  }
+
+# now output the result
+
+my $output_fh;
+
+if (defined $output_file)
+  {
+    print "Outputting to '$output_file'.\n" if $verbose;
+    $output_fh = new IO::File $output_file, "w"
+      or die "Failed to open '$output_file' for writing: $!";
+  }
+else
+  {
+    print "Output follows.\n" if $verbose;
+    $output_fh = *STDOUT;
+  }
+
+print $output_fh <<END;
+/*
+ * Automatically generated tree information
+ */
+
+#ifndef ARCH_TREE_INFO
+#define ARCH_TREE_INFO
+
+#define ARCH_TREE_DEVELOPMENT      $tree_development
+#define ARCH_TREE_ARCHIVE          "$tree_archive"
+#define ARCH_TREE_CATEGORY         "$tree_category"
+#define ARCH_TREE_BRANCH           "$tree_branch"
+#define ARCH_TREE_VERSION          "$tree_version"
+#define ARCH_TREE_REVISION         "$tree_revision"
+#define ARCH_TREE_FULLNAME         "$tree_fullname"
+#define ARCH_TREE_DATE             "$tree_date"
+#define ARCH_TREE_STANDARD_DATE    "$tree_standard_date"
+#define ARCH_TREE_LATEST_COMMITTER "$tree_latest_committer"
+#define ARCH_TREE_BUILDER          "$tree_builder"
+
+#endif
+
+END
+
+# arch-tag: b0148437-aa72-4397-99e6-490b09b5f2c3

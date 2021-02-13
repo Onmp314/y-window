@@ -1,0 +1,128 @@
+# Test keymap
+
+keymap
+{
+  # Try everything in every combination
+
+  modifier shift = 0;
+  modifier ctrl = 1;
+
+  modifier
+  {
+    alt = 2;
+    meta = 3;
+    super = 4;
+    hyper = 5;
+  }
+
+  modifier shift_ctrl = shift | ctrl;
+
+  keycode left_shift = 50;
+  keycode left_control = 37;
+  keycode right_control = 109;
+  keycode caps_lock = 66;
+
+  keycode
+  {
+    alpha_a = 38;
+    alpha_b = 56;
+  }
+
+  keycode name alpha_a = "a";
+  modifier name shift = "shift";
+
+  include keycode "alpha";
+
+  keycode name
+  {
+    alpha_b = "b";
+    alpha_c = "c";
+  }
+
+  modifier name
+  {
+    ctrl/ctrl = "ctrl";
+  }
+
+  seq left_shift[0/shift] setModifiers(shift);
+  seq ^left_shift[*] maskModifiers(!shift);
+
+  seq left_control[0/ctrl] setModifiers(ctrl);
+  seq ^left_control[*] maskModifiers(!ctrl);
+
+  seq
+  {
+    alpha_a string("a");
+    alpha_a[shift] string("A");
+    alpha_a[ctrl] event("C-a");
+    alpha_a[shift|ctrl] event("C-A");
+
+    alpha_b[shift_ctrl] event("C-B");
+
+    alpha_a ^alpha_a alpha_b event("ab");
+    alpha_a alpha_c event("ac");
+  }
+}
+
+keycode "alpha1"
+{
+  alpha_c = 54;
+  alpha_d = 40;
+}
+
+keycode "alpha2"
+{
+  alpha_e = 26;
+  alpha_o = 32;
+}
+
+keycode "alpha"
+{
+  include "alpha1";
+  include "alpha2";
+}
+
+keycode "compose_caps_lock"
+{
+  compose = caps_lock;
+}
+
+seq "compose"
+{
+  *compose *alpha_c alpha_o string("©");
+  *compose *alpha_a alpha_e string("æ");
+}
+
+option "compose"
+{
+  keymap "caps_lock"
+  {
+    include keycode "compose_caps_lock";
+    include seq "compose";
+  }
+  keymap "right_control"
+  {
+    keycode compose = right_control;
+    include seq "compose";
+  }
+}
+
+keymap "ad_separate"
+{
+  seq *alpha_a alpha_d string("ad");
+}
+
+option "ad"
+{
+  keymap "ad_separate";
+  keymap "together"
+  {
+    seq alpha_a alpha_d string("ad");
+  }
+}
+
+keymap "escape"
+{
+  keycode escape = 9;
+  seq escape event("escape");
+}

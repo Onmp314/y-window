@@ -1,0 +1,22 @@
+#!/bin/bash
+
+set -e
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+sysconfdir=@sysconfdir@
+bindir=@bindir@
+
+yconfigfile=${YCONFIGFILE:-${sysconfdir}/Y/default.conf}
+
+# Y detaches. This will return once it is up and running:
+YPID=`${bindir}/Y --emit-pid`
+
+export YDISPLAY="unix:/tmp/.Y-unix/$YPID"
+
+if [ -x $HOME/.ysession ]
+then
+   exec $HOME/.ysession
+else
+   exec ${bindir}/yiterm
+fi

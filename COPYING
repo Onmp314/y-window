@@ -1,0 +1,17 @@
+
+The Y communication library and the YC++ library, being the contents of the
+libY and libYc++ directories in this archive, are licensed according to the
+terms of the GNU Lesser General Public License, contained in the file
+COPYING.LGPL.
+
+The yiterm program, being the contents of the clients/yiterm directory in this
+archive, are licensed according to the terms of the Common Public License,
+contained in the file COPYING.CPL.
+
+The remainder of the files in this archive are, unless otherwise stated in the
+file, licensed according to the terms of the GNU General Public License,
+contained in the file COPYING.GPL.
+
+(C) 2003 Mark Thomas
+
+# arch-tag: 25d27392-fccd-4d84-810b-cbf11f561ac7
